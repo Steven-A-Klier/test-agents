@@ -1,0 +1,116 @@
+# ============================================================
+# PR Validation Workflow
+# ============================================================
+# This workflow validates that every PR meets the team's
+# required standards. It posts a comment listing any issues
+# and fails the status check to block merging.
+#
+# ⚠️  IMPORTANT: To fully block merging, you must add
+# "Validate PR" as a required status check in:
+# Settings → Branches → Branch protection rules
+# ============================================================
+
+name: PR Validation
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - labeled
+      - unlabeled
+      - assigned
+      - unassigned
+
+permissions:
+  pull-requests: write
+  statuses: write
+
+jobs:
+  validate-pr:
+    name: Validate PR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run PR Validation Checks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          LABEL_COUNT: ${{ toJSON(github.event.pull_request.labels) }}
+          ASSIGNEE_COUNT: ${{ toJSON(github.event.pull_request.assignees) }}
+        run: |
+          FAILURES=""
+
+          # ── 1. Title Check ──────────────────────────────────────
+          if ! echo "$PR_TITLE" | grep -qP '^NGW-\d+: .+'; then
+            FAILURES="${FAILURES}\n- ❌ **Title**: Must start with \`NGW-XXXX: \` (e.g. \`NGW-1234: My PR title\`)"
+          fi
+
+          # ── 2. Branch Check ─────────────────────────────────────
+          BRANCH_PREFIX_OK=false
+          BRANCH_TICKET_OK=false
+
+          if echo "$PR_BRANCH" | grep -qP '^(feature|bugfix|hotfix|task)/'; then
+            BRANCH_PREFIX_OK=true
+          fi
+          if echo "$PR_BRANCH" | grep -qP 'NGW-\d+'; then
+            BRANCH_TICKET_OK=true
+          fi
+
+          if [ "$BRANCH_PREFIX_OK" = false ] || [ "$BRANCH_TICKET_OK" = false ]; then
+            FAILURES="${FAILURES}\n- ❌ **Branch**: Must start with \`feature/\`, \`bugfix/\`, \`hotfix/\`, or \`task/\` and include a ticket number (e.g. \`feature/NGW-1234-description\`)"
+          fi
+
+          # ── 3. Jira Link Check ──────────────────────────────────
+          if ! echo "$PR_BODY" | grep -qP 'atlassian\.net/browse/NGW-\d+'; then
+            FAILURES="${FAILURES}\n- ❌ **Jira Link**: PR description must contain a Jira link (e.g. \`https://yourorg.atlassian.net/browse/NGW-1234\`)"
+          fi
+
+          # ── 4. Label Check ──────────────────────────────────────
+          LABEL_COUNT_NUM=$(echo "$LABEL_COUNT" | jq '. | length')
+          if [ "$LABEL_COUNT_NUM" -eq 0 ]; then
+            FAILURES="${FAILURES}\n- ❌ **Label**: At least one label must be applied to this PR"
+          fi
+
+          # ── 5. Assignee Check ───────────────────────────────────
+          ASSIGNEE_COUNT_NUM=$(echo "$ASSIGNEE_COUNT" | jq '. | length')
+          if [ "$ASSIGNEE_COUNT_NUM" -eq 0 ]; then
+            FAILURES="${FAILURES}\n- ❌ **Assignee**: At least one person must be assigned to this PR"
+          fi
+
+          # ── Build Comment ───────────────────────────────────────
+          MARKER="<!-- pr-validation-bot -->"
+
+          if [ -z "$FAILURES" ]; then
+            COMMENT_BODY="${MARKER}\n## ✅ PR Validation Passed\n\nAll checks are satisfied — this PR is ready for review!"
+          else
+            COMMENT_BODY="${MARKER}\n## ❌ PR Validation Failed\n\nThe following issues were found with this pull request:\n${FAILURES}\n\nPlease fix the above issues and the checks will re-run automatically."
+          fi
+
+          # ── Find existing bot comment and update or create ──────
+          EXISTING_COMMENT_ID=$(gh api \
+            /repos/${REPO}/issues/${PR_NUMBER}/comments \
+            --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" | head -n 1)
+
+          if [ -n "$EXISTING_COMMENT_ID" ]; then
+            gh api --method PATCH \
+              /repos/${REPO}/issues/comments/${EXISTING_COMMENT_ID} \
+              -f body="$(echo -e "$COMMENT_BODY")"
+          else
+            gh api --method POST \
+              /repos/${REPO}/issues/${PR_NUMBER}/comments \
+              -f body="$(echo -e "$COMMENT_BODY")"
+          fi
+
+          # ── Fail the check if there are issues ──────────────────
+          if [ -n "$FAILURES" ]; then
+            echo "❌ PR validation failed. See the PR comment for details."
+            exit 1
+          fi
+
+          echo "✅ All PR validation checks passed!"
