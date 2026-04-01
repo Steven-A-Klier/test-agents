@@ -67,8 +67,8 @@ jobs:
           fi
 
           # ── 3. Jira Link Check ──────────────────────────────────
-          if ! echo "$PR_BODY" | grep -iqP 'atlassian\.net/browse/NGW-\d+'; then
-            FAILURES="${FAILURES}\n- ❌ **Jira Link**: PR description must contain a Jira link (e.g. \`https://yourorg.atlassian.net/browse/NGW-1234\`)"
+          if ! echo "$PR_BODY" | grep -iqP 'https?://[^\s]*jira[^\s]*'; then
+            FAILURES="${FAILURES}\n- ❌ **Jira Link**: PR description must contain a Jira link (e.g. \`https://yourorg.jira.com/browse/NGW-1234\`)"
           fi
 
           # ── 4. Label Check ──────────────────────────────────────
