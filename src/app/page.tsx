@@ -1,5 +1,7 @@
 "use client";
 
+//lol
+
 import { useState, useEffect, useCallback } from "react";
 import NoteEditor from "./components/NoteEditor";
 import NoteCard from "./components/NoteCard";
