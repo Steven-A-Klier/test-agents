@@ -10,40 +10,54 @@
 # Settings → Branches → Branch protection rules
 # ============================================================
 
+# The display name of this workflow as it appears in GitHub Actions UI
 name: PR Validation
 
+# Defines what events trigger this workflow
 on:
+  # Trigger only on pull request activity (not pushes or other events)
   pull_request:
+    # Limit to specific PR lifecycle events so the workflow re-runs whenever
+    # any of the validated fields (title, labels, assignees, etc.) change
     types:
-      - opened
-      - edited
-      - reopened
-      - labeled
-      - unlabeled
-      - assigned
-      - unassigned
+      - opened # PR was just created
+      - edited # PR title or body was changed
+      - reopened # A previously closed PR was reopened
+      - labeled # A label was added to the PR
+      - unlabeled # A label was removed from the PR
+      - assigned # Someone was assigned to the PR
+      - unassigned # An assignee was removed from the PR
 
+# Grant the GITHUB_TOKEN the minimum permissions this workflow needs
 permissions:
-  pull-requests: write
-  statuses: write
+  pull-requests: write # Allows posting/updating comments on the PR
+  statuses: write # Allows setting commit status checks (pass/fail)
 
+# Top-level container for all jobs in this workflow
 jobs:
+  # Job ID (used internally by GitHub Actions)
   validate-pr:
+    # Human-readable name shown in the GitHub UI and required status checks
     name: Validate PR
+    # Run on a fresh GitHub-hosted Ubuntu runner
     runs-on: ubuntu-latest
 
     steps:
+      # Single step that performs all validation checks via a shell script
       - name: Run PR Validation Checks
+        # Expose PR metadata as shell environment variables so the script
+        # can reference them without calling the GitHub API a second time
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          LABEL_COUNT: ${{ toJSON(github.event.pull_request.labels) }}
-          ASSIGNEE_COUNT: ${{ toJSON(github.event.pull_request.assignees) }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Auth token used by the `gh` CLI to post comments
+          PR_TITLE: ${{ github.event.pull_request.title }} # The PR title text, validated against the NGW-XXXX: format
+          PR_BODY: ${{ github.event.pull_request.body }} # The PR description, checked for a Jira link
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }} # The source branch name, validated for prefix and ticket number
+          PR_NUMBER: ${{ github.event.pull_request.number }} # PR number, used to target the correct issue for comments
+          REPO: ${{ github.repository }} # owner/repo string, used in GitHub API paths
+          LABEL_COUNT: ${{ toJSON(github.event.pull_request.labels) }} # Full label array as JSON; length is checked via jq
+          ASSIGNEE_COUNT: ${{ toJSON(github.event.pull_request.assignees) }} # Full assignee array as JSON; length is checked via jq
         run: |
+          # Accumulates failure messages; empty string means all checks passed
           FAILURES=""
 
           # ── 1. Title Check ──────────────────────────────────────
@@ -84,8 +98,10 @@ jobs:
           fi
 
           # ── Build Comment ───────────────────────────────────────
+          # HTML comment marker used to identify the bot's comment for updates vs. new posts
           MARKER="<!-- pr-validation-bot -->"
 
+          # Build the comment body; success path if no failures accumulated, failure path otherwise
           if [ -z "$FAILURES" ]; then
             COMMENT_BODY="${MARKER}\n## ✅ PR Validation Passed\n\nAll checks are satisfied — this PR is ready for review!"
           else
@@ -93,24 +109,31 @@ jobs:
           fi
 
           # ── Find existing bot comment and update or create ──────
+          # Fetch all PR comments and extract the ID of any existing bot comment
+          # (identified by the MARKER prefix) so we edit in-place instead of spamming
           EXISTING_COMMENT_ID=$(gh api \
             /repos/${REPO}/issues/${PR_NUMBER}/comments \
             --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" | head -n 1)
 
           if [ -n "$EXISTING_COMMENT_ID" ]; then
+            # Bot comment already exists — update it with the latest results
             gh api --method PATCH \
               /repos/${REPO}/issues/comments/${EXISTING_COMMENT_ID} \
               -f body="$(echo -e "$COMMENT_BODY")"
           else
+            # No prior bot comment found — post a new one on the PR
             gh api --method POST \
               /repos/${REPO}/issues/${PR_NUMBER}/comments \
               -f body="$(echo -e "$COMMENT_BODY")"
           fi
 
           # ── Fail the check if there are issues ──────────────────
+          # Exit with a non-zero code so GitHub marks the status check as failed,
+          # which blocks merging when this check is required on the branch protection rule
           if [ -n "$FAILURES" ]; then
             echo "❌ PR validation failed. See the PR comment for details."
             exit 1
           fi
 
+          # All checks passed — exit 0 (success) so the status check turns green
           echo "✅ All PR validation checks passed!"
